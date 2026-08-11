@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hectronic Tag Converter v3</title>
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1020;color:#fff;margin:0}
+.wrap{max-width:760px;margin:auto;padding:22px}
+.card{background:#151c2f;border:1px solid #2e3b59;border-radius:16px;padding:18px;margin:14px 0}
+h1{margin:0 0 4px} .sub{opacity:.7;margin:0 0 18px}
+input,button{font:inherit}
+input[type=file],input[type=text],input[type=number]{width:100%;box-sizing:border-box;padding:13px;border-radius:10px;border:1px solid #44506c;background:#0f1628;color:#fff}
+button{width:100%;padding:13px;border:0;border-radius:10px;font-weight:700;background:#eef2ff;color:#111827;margin-top:10px;cursor:pointer}
+.out{display:flex;justify-content:space-between;gap:12px;background:#0e1526;padding:10px 12px;border-radius:10px;margin-top:8px}
+.val{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;text-align:right;word-break:break-all}
+.small{font-size:13px;opacity:.75;line-height:1.45}
+.ok{color:#9ae6b4}.err{color:#ffb4b4}.warn{color:#ffd98a}
+#log{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:#090e1a;padding:10px;border-radius:10px;max-height:180px;overflow:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Hectronic Tag Converter v3</h1>
+<p class="sub">Standalone versie — werkt zonder service worker of installatie</p>
+
+<div class="card">
+<label><b>1. Kies Flipper ASK RAW-bestand</b></label>
+<input id="file" type="file" accept=".raw,.ask.raw,application/octet-stream">
+<button id="analyseBtn" type="button">Analyseer ASK-bestand</button>
+<p id="status" class="small">Nog geen bestand geanalyseerd.</p>
+
+<div class="out"><span>Frequentie</span><span id="freq" class="val">—</span></div>
+<div class="out"><span>Frames</span><span id="frames" class="val">—</span></div>
+<div class="out"><span>45 bits</span><span id="bits" class="val">—</span></div>
+<div class="out"><span>RAW 5 bytes</span><span id="raw5" class="val">—</span></div>
+<div class="out"><span>Laatste 4 bytes decimaal</span><span id="rawdec" class="val">—</span></div>
+<div class="out"><span>XOR/check + stop</span><span id="check" class="val">—</span></div>
+
+<p class="small warn">
+Bij jouw oude Impro-tag is de RAW-waarde uit het ASK-frame niet hetzelfde als het Hectronic tagnummer.
+Voor jouw bekende tag zagen we RAW <b>A0 0F 80 EE A8</b>, terwijl Hectronic <b>344649788</b> toont.
+</p>
+</div>
+
+<div class="card">
+<label><b>2. Hectronic nummer → Flipper EM4100</b></label>
+<input id="dec" type="number" inputmode="numeric" placeholder="344649788">
+<input id="prefix" type="text" value="A0" maxlength="2" style="margin-top:8px" aria-label="Prefix">
+<button id="convertBtn" type="button">Maak EM4100 bytes</button>
+<div class="out"><span>Flipper EM4100</span><span id="emout" class="val">—</span></div>
+</div>
+
+<div class="card">
+<b>Debuglog</b>
+<div id="log">App gestart.</div>
+</div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+function el(id){return document.getElementById(id);}
+function log(s){el('log').textContent += "\n"+s; el('log').scrollTop=el('log').scrollHeight;}
+function status(s, cls){el('status').textContent=s; el('status').className='small '+(cls||'');}
+function readU32(dv,o){return dv.getUint32(o,true);}
+function readF32(dv,o){return dv.getFloat32(o,true);}
+
+function readVarint(bytes,pos){
+  var value=0, shift=0, p=pos, b;
+  while(p<bytes.length && shift<35){
+    b=bytes[p++];
+    value += (b & 127) * Math.pow(2,shift);
+    if((b & 128)===0) return [value,p];
+    shift += 7;
+  }
+  throw new Error('Ongeldige varint op positie '+pos);
+}
+
+function parseRifl(buf){
+  var bytes=new Uint8Array(buf), dv=new DataView(buf);
+  if(bytes.length<20) throw new Error('Bestand te klein');
+  var magic=String.fromCharCode(bytes[0],bytes[1],bytes[2],bytes[3]);
+  if(magic!=='RIFL') throw new Error('Geen RIFL-bestand; magic='+magic);
+  var version=readU32(dv,4), freq=readF32(dv,8), duty=readF32(dv,12), maxBuf=readU32(dv,16);
+  log('RIFL v'+version+', '+freq+' Hz, duty '+duty+', maxBuf '+maxBuf);
+  var pos=20, pairs=[], block=0;
+  while(pos+4<=bytes.length){
+    var sz=readU32(dv,pos); pos+=4;
+    if(sz===0 || sz>maxBuf || pos+sz>bytes.length) break;
+    block++;
+    var end=pos+sz;
+    while(pos<end){
+      var a=readVarint(bytes,pos); pos=a[1];
+      if(pos>=end) break;
+      var b=readVarint(bytes,pos); pos=b[1];
+      pairs.push([a[0],b[0]]);
+    }
+    pos=end;
+  }
+  log('Blokken: '+block+', pulse/duration-paren: '+pairs.length);
+  return {freq:freq,duty:duty,pairs:pairs};
+}
+
+function extractFrames(pairs){
+  var frames=[], cur=[];
+  function flush(){
+    if(cur.length>=35 && cur.length<=60) frames.push(cur);
+    cur=[];
+  }
+  for(var i=0;i<pairs.length;i++){
+    var pulse=pairs[i][0], dur=pairs[i][1];
+    if(dur>2000){flush(); continue;}
+    if(dur>=650 && dur<=850 && pulse>=150 && pulse<=750){cur.push([pulse,dur]); continue;}
+    if(dur>1000){flush(); continue;}
+  }
+  flush();
+  return frames;
+}
+
+function classify(frame){
+  if(frame.length!==45) return null;
+  var ps=frame.map(function(x){return x[0];}).sort(function(a,b){return a-b;});
+  var best=-1, idx=-1;
+  for(var i=0;i<ps.length-1;i++){
+    var g=ps[i+1]-ps[i];
+    if(g>best){best=g;idx=i;}
+  }
+  if(idx<0 || best<80) return null;
+  var th=(ps[idx]+ps[idx+1])/2;
+  var bits='';
+  for(i=0;i<frame.length;i++) bits += frame[i][0]>th ? '1':'0';
+  return bits;
+}
+
+function binToHex(bits){
+  var out='';
+  for(var i=0;i<bits.length;i+=4) out += parseInt(bits.substr(i,4),2).toString(16).toUpperCase();
+  return out;
+}
+function spaced(h){return h.match(/.{1,2}/g).join(' ');}
+function xorCheck(bits40){
+  var x=0;
+  for(var i=0;i<40;i+=4) x ^= parseInt(bits40.substr(i,4),2);
+  return x.toString(2).padStart ? x.toString(2).padStart(4,'0') : ('000'+x.toString(2)).slice(-4);
+}
+
+function analyse(){
+  try{
+    var file=el('file').files && el('file').files[0];
+    log('Analyseknop ingedrukt.');
+    if(!file){status('Kies eerst een ASK RAW-bestand.','err');return;}
+    status('Bezig met lezen: '+file.name+' …','warn');
+    log('Bestand: '+file.name+' ('+file.size+' bytes)');
+    var reader=new FileReader();
+    reader.onerror=function(){status('Bestand kon niet gelezen worden.','err');log('FileReader error');};
+    reader.onload=function(ev){
+      try{
+        var p=parseRifl(ev.target.result);
+        var frames=extractFrames(p.pairs);
+        log('Kandidaatframes: '+frames.length+', lengtes: '+frames.map(function(f){return f.length;}).slice(0,20).join(','));
+        var counts={}, total=0;
+        for(var i=0;i<frames.length;i++){
+          var b=classify(frames[i]);
+          if(b){counts[b]=(counts[b]||0)+1; total++;}
+        }
+        var bestBits=null,bestCount=0;
+        Object.keys(counts).forEach(function(k){if(counts[k]>bestCount){bestCount=counts[k];bestBits=k;}});
+        if(!bestBits) throw new Error('Geen herkenbaar 45-symbolen frame gevonden');
+
+        var data40=bestBits.substr(0,40), chk=bestBits.substr(40,4), stop=bestBits.substr(44,1);
+        var hex=binToHex(data40);
+        var last8=hex.substr(2);
+        var dec=parseInt(last8,16);
+
+        el('freq').textContent=Math.round(p.freq)+' Hz / '+Math.round(p.duty*100)+'%';
+        el('frames').textContent=bestCount+' identiek / '+total;
+        el('bits').textContent=bestBits;
+        el('raw5').textContent=spaced(hex);
+        el('rawdec').textContent=String(dec);
+        el('check').textContent=chk+' (verwacht '+xorCheck(data40)+'), stop '+stop;
+        status('Analyse gelukt.','ok');
+        log('Beste frame: '+bestBits);
+        log('Payload: '+spaced(hex)+' ; laatste 32-bit='+dec);
+      }catch(e){
+        status('Analysefout: '+e.message,'err');
+        log('FOUT: '+e.stack);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }catch(e){
+    status('Fout: '+e.message,'err');log('FOUT buiten analyse: '+e.stack);
+  }
+}
+
+function convert(){
+  var n=Number(el('dec').value);
+  var prefix=el('prefix').value.toUpperCase().replace(/[^0-9A-F]/g,'');
+  if(!Number.isInteger(n)||n<0||n>4294967295){el('emout').textContent='Ongeldig nummer';return;}
+  if(prefix.length!==2){el('emout').textContent='Prefix moet 2 hextekens zijn';return;}
+  var h=Math.floor(n).toString(16).toUpperCase();
+  while(h.length<8)h='0'+h;
+  el('emout').textContent=prefix+' '+h.substr(0,2)+' '+h.substr(2,2)+' '+h.substr(4,2)+' '+h.substr(6,2);
+}
+
+el('analyseBtn').addEventListener('click',analyse);
+el('convertBtn').addEventListener('click',convert);
+log('JavaScript geladen; knoppen gekoppeld.');
+})();
+</script>
+</body>
+</html>
