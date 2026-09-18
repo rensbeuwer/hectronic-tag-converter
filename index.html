@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hectronic Tag Converter v5</title>
+<title>Hectronic Tag Converter v6</title>
 <style>
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1020;color:#fff;margin:0}
 .wrap{max-width:760px;margin:auto;padding:22px}
@@ -21,45 +21,20 @@ button{width:100%;padding:13px;border:0;border-radius:10px;font-weight:700;backg
 </head>
 <body>
 <div class="wrap">
-<h1>Hectronic Tag Converter v5</h1>
-<p class="sub">Flipper ASK RAW → Impro legacy → Hectronic nummer → EM4100</p>
+<h1>Hectronic Tag Converter v6</h1>
+<p class="sub">Hectronic nummer ↔ EM4100 HEX</p>
 
 <div class="card">
-<label><b>1. Kies Flipper ASK RAW-bestand</b></label>
-<input id="file" type="file" accept=".raw,.ask.raw,application/octet-stream">
-<button id="analyseBtn" type="button">Analyseer ASK-bestand</button>
-<p id="status" class="small">Nog geen bestand geanalyseerd.</p>
-
-<div class="out"><span>Frequentie</span><span id="freq" class="val">—</span></div>
-<div class="out"><span>Frames</span><span id="frames" class="val">—</span></div>
-<div class="out"><span>RAW 5 bytes</span><span id="raw5" class="val">—</span></div>
-<div class="out"><span>Impro trits</span><span id="trits" class="val">—</span></div>
-<div class="out highlight"><span><b>Hectronic nummer</b></span><span id="hecnum" class="val"><b>—</b></span></div>
-<div class="out highlight"><span><b>Flipper EM4100</b></span><span id="emauto" class="val"><b>—</b></span></div>
-<div class="out"><span>Legacy suffix</span><span id="suffix" class="val">—</span></div>
-<div class="out"><span>XOR/check + stop</span><span id="check" class="val">—</span></div>
-
-<p class="small ok">
-Automatische legacy-decoding bevestigd met twee onafhankelijke tags. De 40 databits worden als 20 twee-bits symbolen gelezen: 00→0, 11→1, 10→2. De eerste 18 trits vormen het Hectronic nummer in basis 3.
-</p>
-</div>
-
-<div class="card">
-<label><b>2. Hectronic nummer → Flipper EM4100</b></label>
+<label><b>1. Hectronic nummer → Flipper EM4100</b></label>
 <input id="dec" type="number" inputmode="numeric" placeholder="344649788">
 <input id="prefix" type="text" value="A0" maxlength="2" style="margin-top:8px" aria-label="Prefix">
 <button id="convertBtn" type="button">Maak EM4100 bytes</button>
 <div class="out"><span>Flipper EM4100</span><span id="emout" class="val">—</span></div>
 </div>
 
-<div class="card">
-<b>Technische details</b>
-<div class="out"><span>45 bits</span><span id="bits" class="val">—</span></div>
-<div class="out"><span>RAW laatste 4 bytes</span><span id="rawdec" class="val">—</span></div>
-</div>
 
 <div class="card">
-<label><b>3. EM4100 HEX → Hectronic nummer</b></label>
+<label><b>2. EM4100 HEX → Hectronic nummer</b></label>
 <input id="hexin" type="text" inputmode="text" placeholder="A0 14 8A F0 3C">
 <button id="hexBtn" type="button">Reken HEX terug</button>
 <div class="out highlight"><span><b>Hectronic nummer</b></span><span id="hexnum" class="val"><b>—</b></span></div>
@@ -89,7 +64,7 @@ function em4100FromNumber(n,prefix){var h=Math.floor(n).toString(16).toUpperCase
 function analyse(){try{var file=el('file').files&&el('file').files[0];log('Analyseknop ingedrukt.');if(!file){status('Kies eerst een ASK RAW-bestand.','err');return}status('Bezig met lezen: '+file.name+' …','warn');log('Bestand: '+file.name+' ('+file.size+' bytes)');var reader=new FileReader();reader.onerror=function(){status('Bestand kon niet gelezen worden.','err');log('FileReader error')};reader.onload=function(ev){try{var p=parseRifl(ev.target.result),frames=extractFrames(p.pairs);log('Kandidaatframes: '+frames.length);var counts={},total=0;for(var i=0;i<frames.length;i++){var b=classify(frames[i]);if(b){counts[b]=(counts[b]||0)+1;total++}}var bestBits=null,bestCount=0;Object.keys(counts).forEach(function(k){if(counts[k]>bestCount){bestCount=counts[k];bestBits=k}});if(!bestBits)throw new Error('Geen herkenbaar 45-symbolen frame gevonden');var data40=bestBits.substr(0,40),chk=bestBits.substr(40,4),stop=bestBits.substr(44,1),hex=binToHex(data40),last8=hex.substr(2),rawdec=parseInt(last8,16),imp=decodeImpro(data40),em=em4100FromNumber(imp.number,'A0');el('freq').textContent=Math.round(p.freq)+' Hz / '+Math.round(p.duty*100)+'%';el('frames').textContent=bestCount+' identiek / '+total;el('bits').textContent=bestBits;el('raw5').textContent=spaced(hex);el('rawdec').textContent=String(rawdec);el('trits').textContent=imp.trits;el('hecnum').textContent=String(imp.number);el('emauto').textContent=em;el('suffix').textContent=imp.suffix;el('check').textContent=chk+' (verwacht '+xorCheck(data40)+'), stop '+stop;el('dec').value=String(imp.number);el('emout').textContent=em;status('Analyse en Impro legacy-decoding gelukt.','ok');log('RAW: '+spaced(hex));log('Trits: '+imp.trits+' -> Hectronic '+imp.number);log('EM4100: '+em)}catch(e){status('Analysefout: '+e.message,'err');log('FOUT: '+e.stack)}};reader.readAsArrayBuffer(file)}catch(e){status('Fout: '+e.message,'err');log('FOUT buiten analyse: '+e.stack)}}
 function hexToHectronic(){var s=el('hexin').value.toUpperCase().replace(/[^0-9A-F]/g,'');if(s.length===10)s=s.substr(2);if(s.length!==8){el('hexnum').textContent='Gebruik 4 of 5 bytes HEX';return}var n=parseInt(s,16);if(!Number.isFinite(n)){el('hexnum').textContent='Ongeldige HEX';return}el('hexnum').textContent=String(n);log('HEX '+s+' -> Hectronic '+n)}
 function convert(){var n=Number(el('dec').value),prefix=el('prefix').value.toUpperCase().replace(/[^0-9A-F]/g,'');if(!Number.isInteger(n)||n<0||n>4294967295){el('emout').textContent='Ongeldig nummer';return}if(prefix.length!==2){el('emout').textContent='Prefix moet 2 hextekens zijn';return}el('emout').textContent=em4100FromNumber(n,prefix)}
-el('analyseBtn').addEventListener('click',analyse);el('convertBtn').addEventListener('click',convert);el('hexBtn').addEventListener('click',hexToHectronic);log('JavaScript geladen; knoppen gekoppeld.');
+el('convertBtn').addEventListener('click',convert);el('hexBtn').addEventListener('click',hexToHectronic);log('JavaScript geladen; knoppen gekoppeld.');
 })();
 </script>
 </body>
